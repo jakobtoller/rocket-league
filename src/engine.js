@@ -119,23 +119,124 @@ class Sfx {
     src.connect(f).connect(g).connect(this.ac.destination);
     src.start(t);
   }
+  // stadium airhorn: stacked detuned saws with a slow pitch sag
+  horn(base = 392, dur = 0.9, gain = 0.055) {
+    if (!this.ac) return;
+    const t = this.ac.currentTime;
+    const lp = this.ac.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1900;
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.035);
+    g.gain.setValueAtTime(gain, t + dur * 0.65);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    lp.connect(g).connect(this.ac.destination);
+    for (const [mult, cents] of [[1, -14], [1, 0], [1, 11], [0.5, 4]]) {
+      const o = this.ac.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(base * mult, t);
+      o.frequency.linearRampToValueAtTime(base * mult * 0.93, t + dur);
+      o.detune.value = cents;
+      o.connect(lp);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+  }
+
+  // crowd roar: band-limited noise with a slow swell
+  crowd(dur = 2.4, gain = 0.13) {
+    if (!this.ac) return;
+    const t = this.ac.currentTime;
+    const len = Math.floor(this.ac.sampleRate * dur);
+    const buf = this.ac.createBuffer(1, len, this.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const src = this.ac.createBufferSource();
+    src.buffer = buf;
+    const hp = this.ac.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 260;
+    const lp = this.ac.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1400;
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.18);
+    g.gain.setValueAtTime(gain, t + dur * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(hp).connect(lp).connect(g).connect(this.ac.destination);
+    src.start(t);
+  }
+
+  // fast air-cutting whoosh for a shot
+  whoosh(dur = 0.38) {
+    if (!this.ac) return;
+    const t = this.ac.currentTime;
+    const len = Math.floor(this.ac.sampleRate * dur);
+    const buf = this.ac.createBuffer(1, len, this.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const src = this.ac.createBufferSource();
+    src.buffer = buf;
+    const bp = this.ac.createBiquadFilter();
+    bp.type = 'bandpass'; bp.Q.value = 1.4;
+    bp.frequency.setValueAtTime(260, t);
+    bp.frequency.exponentialRampToValueAtTime(2800, t + dur);
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.16, t + dur * 0.4);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp).connect(g).connect(this.ac.destination);
+    src.start(t);
+  }
+
+  // heavy body thump (save impact, explosions)
+  thump() {
+    if (!this.ac) return;
+    const t = this.ac.currentTime;
+    const o = this.ac.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(110, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.24);
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.22, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
+    o.connect(g).connect(this.ac.destination);
+    o.start(t); o.stop(t + 0.3);
+    this.noise(0.09, 0.14, 420);
+  }
+
+  // rising tension sweep for epic saves
+  riser(dur = 0.42) {
+    if (!this.ac) return;
+    const t = this.ac.currentTime;
+    const o = this.ac.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(180, t);
+    o.frequency.exponentialRampToValueAtTime(880, t + dur);
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.06, t + dur * 0.8);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.05);
+    o.connect(g).connect(this.ac.destination);
+    o.start(t); o.stop(t + dur + 0.1);
+  }
+
   hit(power) { this.noise(0.09, clamp(power / 2600, 0.03, 0.3), 700 + power * 0.6); }
   bounce() { this.noise(0.05, 0.05, 500); }
-  shot() { this.tone(520, 0.08, 'square', 0.05); setTimeout(() => this.tone(760, 0.12, 'square', 0.05), 70); }
-  save() { this.tone(340, 0.16, 'sawtooth', 0.06, -120); this.noise(0.12, 0.1, 900); }
+  shot() { this.whoosh(); }
+  save() { this.thump(); this.tone(300, 0.18, 'sawtooth', 0.05, -140); }
   epic() {
-    [660, 880, 1100].forEach((f, i) => setTimeout(() => this.tone(f, 0.14, 'square', 0.06), i * 70));
-    this.noise(0.25, 0.12, 1200);
+    this.riser();
+    setTimeout(() => { this.thump(); this.horn(523, 0.5, 0.04); this.crowd(1.6, 0.11); }, 400);
   }
   pad(big) { this.tone(big ? 660 : 880, 0.09, 'sine', 0.05, big ? 220 : 120); }
   count() { this.tone(440, 0.11, 'square', 0.05); }
   go() { this.tone(880, 0.3, 'square', 0.06); }
   goal() {
-    [523, 659, 784, 1047].forEach((f, i) =>
-      setTimeout(() => this.tone(f, 0.22, 'square', 0.06), i * 95));
-    this.noise(1.4, 0.09, 300);
+    this.horn(392, 1.05, 0.06);          // stadium airhorn
+    setTimeout(() => this.horn(523, 0.7, 0.045), 250);
+    this.crowd(2.8, 0.15);               // crowd goes wild
+    this.thump();                        // boom on impact
   }
-  demo() { this.noise(0.3, 0.22, 900); this.tone(120, 0.35, 'sawtooth', 0.09, -60); }
+  demo() { this.thump(); this.noise(0.3, 0.22, 900); this.tone(120, 0.35, 'sawtooth', 0.09, -60); }
   whistle() { this.tone(2300, 0.5, 'sine', 0.06, 300); }
 }
 
