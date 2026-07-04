@@ -1,0 +1,29 @@
+:root {
+  --blue: #39c0ff;
+  --orange: #ffb03a;
+  --gold: #ffd94a;
+  --ink: #e8f4ff;
+  --ink-dim: rgba(232, 244, 255, 0.62);
+  --bg: #05080c;
+  --panel: rgba(10, 16, 22, 0.82);
+  --line: rgba(140, 220, 255, 0.22);
+  font-family: 'Chakra Petch', 'Avenir Next Condensed', sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+  overscroll-behavior: none;   /* no pull-to-refresh on mobile */
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
