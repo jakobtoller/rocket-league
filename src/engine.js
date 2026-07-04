@@ -67,12 +67,18 @@ const rand = (a, b) => a + Math.random() * (b - a);
 //  Sound — tiny WebAudio synth, unlocked on first interaction
 // ============================================================
 class Sfx {
-  constructor() { this.ac = null; this.boostGain = null; }
+  constructor() {
+    this.ac = null;
+    this.boostGain = null;
+    this.boostFileGain = null;
+    this.files = new Map();      // custom audio files from /sfx/ (optional)
+  }
   unlock() {
     if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); return; }
     const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
     if (!AC) return;
     this.ac = new AC();
+    this.loadFiles();
     const len = this.ac.sampleRate;
     const buf = this.ac.createBuffer(1, len, this.ac.sampleRate);
     const d = buf.getChannelData(0);
@@ -86,11 +92,60 @@ class Sfx {
     src.connect(bp).connect(this.boostGain).connect(this.ac.destination);
     src.start();
   }
+  // optional real audio files: drop them in public/sfx/ + manifest.json
+  // (see public/sfx/README.md) — every sound falls back to synth if absent
+  async loadFiles() {
+    try {
+      const res = await fetch('/sfx/manifest.json');
+      if (!res.ok) return;
+      const manifest = await res.json();
+      for (const [key, file] of Object.entries(manifest)) {
+        fetch('/sfx/' + file)
+          .then((r) => (r.ok ? r.arrayBuffer() : null))
+          .then((ab) => ab && this.ac.decodeAudioData(ab))
+          .then((buf) => {
+            if (!buf) return;
+            this.files.set(key, buf);
+            if (key === 'boost') this.setupBoostFile(buf);
+          })
+          .catch(() => {});
+      }
+    } catch { /* no manifest — synth only */ }
+  }
+
+  setupBoostFile(buf) {
+    const src = this.ac.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    this.boostFileGain = this.ac.createGain();
+    this.boostFileGain.gain.value = 0;
+    src.connect(this.boostFileGain).connect(this.ac.destination);
+    src.start();
+  }
+
+  // play a loaded file; returns false so callers can fall back to synth
+  play(key, gain = 0.5, rate = 1) {
+    const buf = this.files.get(key);
+    if (!buf || !this.ac) return false;
+    const src = this.ac.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = this.ac.createGain();
+    g.gain.value = gain;
+    src.connect(g).connect(this.ac.destination);
+    src.start();
+    return true;
+  }
+
   setBoost(on) {
-    if (!this.boostGain) return;
+    const g = this.boostFileGain || this.boostGain;
+    if (!g) return;
     const t = this.ac.currentTime;
-    this.boostGain.gain.cancelScheduledValues(t);
-    this.boostGain.gain.linearRampToValueAtTime(on ? 0.05 : 0, t + 0.08);
+    g.gain.cancelScheduledValues(t);
+    g.gain.linearRampToValueAtTime(on ? (this.boostFileGain ? 0.4 : 0.05) : 0, t + 0.08);
+    if (this.boostFileGain && this.boostGain) {
+      this.boostGain.gain.cancelScheduledValues(t);
+      this.boostGain.gain.linearRampToValueAtTime(0, t + 0.05);
+    }
   }
   tone(freq, dur, type = 'square', gain = 0.06, slide = 0) {
     if (!this.ac) return;
@@ -219,25 +274,40 @@ class Sfx {
     o.start(t); o.stop(t + dur + 0.1);
   }
 
-  hit(power) { this.noise(0.09, clamp(power / 2600, 0.03, 0.3), 700 + power * 0.6); }
-  bounce() { this.noise(0.05, 0.05, 500); }
-  shot() { this.whoosh(); }
-  save() { this.thump(); this.tone(300, 0.18, 'sawtooth', 0.05, -140); }
+  hit(power) {
+    const v = clamp(power / 2600, 0.03, 0.3);
+    if (this.play('hit', v * 2, 0.9 + power / 4000)) return;
+    this.noise(0.09, v, 700 + power * 0.6);
+  }
+  bounce() { if (!this.play('bounce', 0.2)) this.noise(0.05, 0.05, 500); }
+  shot() { if (!this.play('shot', 0.5)) this.whoosh(); }
+  save() {
+    if (this.play('save', 0.55)) return;
+    this.thump(); this.tone(300, 0.18, 'sawtooth', 0.05, -140);
+  }
   epic() {
+    if (this.play('epic', 0.6)) return;
     this.riser();
     setTimeout(() => { this.thump(); this.horn(523, 0.5, 0.04); this.crowd(1.6, 0.11); }, 400);
   }
-  pad(big) { this.tone(big ? 660 : 880, 0.09, 'sine', 0.05, big ? 220 : 120); }
-  count() { this.tone(440, 0.11, 'square', 0.05); }
-  go() { this.tone(880, 0.3, 'square', 0.06); }
+  pad(big) {
+    if (this.play(big ? 'pad-big' : 'pad-small', 0.4)) return;
+    this.tone(big ? 660 : 880, 0.09, 'sine', 0.05, big ? 220 : 120);
+  }
+  count() { if (!this.play('count', 0.4)) this.tone(440, 0.11, 'square', 0.05); }
+  go() { if (!this.play('go', 0.5)) this.tone(880, 0.3, 'square', 0.06); }
   goal() {
+    if (this.play('goal', 0.65)) return;
     this.horn(392, 1.05, 0.06);          // stadium airhorn
     setTimeout(() => this.horn(523, 0.7, 0.045), 250);
     this.crowd(2.8, 0.15);               // crowd goes wild
     this.thump();                        // boom on impact
   }
-  demo() { this.thump(); this.noise(0.3, 0.22, 900); this.tone(120, 0.35, 'sawtooth', 0.09, -60); }
-  whistle() { this.tone(2300, 0.5, 'sine', 0.06, 300); }
+  demo() {
+    if (this.play('demo', 0.6)) return;
+    this.thump(); this.noise(0.3, 0.22, 900); this.tone(120, 0.35, 'sawtooth', 0.09, -60);
+  }
+  whistle() { if (!this.play('whistle', 0.5)) this.tone(2300, 0.5, 'sine', 0.06, 300); }
 }
 
 // ============================================================
@@ -802,14 +872,17 @@ export class Game {
   // ---------------- announcer ----------------
   playAnnounce(kind, n) {
     if (kind === 'tick') {
-      this.sfx.count();
-      this.voice.say(String(n), 1.2);
+      if (!this.sfx.play('announce-' + n, 0.8)) {
+        this.sfx.count();
+        this.voice.say(String(n), 1.2);
+      }
       return;
     }
     const c = CALLOUTS[kind];
     if (!c) return;
     if (c.sfx) this.sfx[c.sfx]();
-    this.voice.say(pick(c.lines));
+    // real voice line file wins over browser TTS
+    if (!this.sfx.play('announce-' + kind, 0.85)) this.voice.say(pick(c.lines));
     if (c.text) this.callout = { text: c.text, t: 1.5 };
   }
 
@@ -1001,7 +1074,7 @@ export class Game {
     this.message = 'GOAL!';
     this.shotActive = null;
     this.sfx.goal();
-    this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
+    if (!this.sfx.play('announce-goal', 0.85)) this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
     this.emit('goal', { team, x: Math.round(this.ball.x), y: Math.round(this.ball.y) });
     this.shake = 22;
     this.spawnExplosion(this.ball.x, this.ball.y, TEAM_COLORS[team].glow, true);
@@ -1023,7 +1096,7 @@ export class Game {
     const { blue, orange } = this.score;
     this.message = blue > orange ? 'BLUE WINS!' : 'ORANGE WINS!';
     const winner = blue > orange ? 'Blue' : 'Orange';
-    this.voice.say(`${winner} team wins!`);
+    if (!this.sfx.play('announce-win-' + winner.toLowerCase(), 0.85)) this.voice.say(`${winner} team wins!`);
     this.emit('win', { team: winner });
     this.endTimer = setTimeout(() => {
       if (this.running && this.onEnd) this.onEnd({ ...this.score, overtime: this.overtime });
@@ -1105,12 +1178,14 @@ export class Game {
     switch (ev.e) {
       case 'goal':
         this.sfx.goal();
-        this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
+        if (!this.sfx.play('announce-goal', 0.85)) this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
         this.shake = 22;
         this.spawnExplosion(ev.x, ev.y, TEAM_COLORS[ev.team].glow, true);
         break;
       case 'say': this.playAnnounce(ev.k, ev.n); break;
-      case 'win': this.voice.say(`${ev.team} team wins!`); break;
+      case 'win':
+        if (!this.sfx.play('announce-win-' + ev.team.toLowerCase(), 0.85)) this.voice.say(`${ev.team} team wins!`);
+        break;
       case 'hit':
         this.sfx.hit(ev.p);
         this.shake = Math.min(14, this.shake + ev.p / 120);
