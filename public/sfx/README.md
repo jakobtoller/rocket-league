@@ -1,4 +1,21 @@
-# Custom Sound Files (optional)
+# Custom Sound Files
+
+## Bundled sounds & attribution
+
+The sounds currently shipping in this folder come from Wikimedia Commons:
+
+| File | Source | License |
+|---|---|---|
+| `goal.mp3` | "F1-Race-Crowd-Applause-Air-Horns" by **WebbFilmsUK** (Wikimedia Commons) | CC BY 4.0 |
+| `whistle.mp3` | "referee-whistle-blow-gymnasium" by splicesound (Wikimedia Commons) | CC0 |
+| `demo.mp3` | "Explosion 10" (Wikimedia Commons) | Public Domain |
+| `save.mp3` | "Dull thud" (Wikimedia Commons) | Public Domain |
+| `epic.mp3` | "Horn stab" (Wikimedia Commons) | CC0 |
+
+All clips were trimmed / loudness-normalized. The CC BY 4.0 clip requires this
+attribution to stay in the repo.
+
+## Adding your own (optional)
 
 The game plays synthesized sounds by default. To use real audio files instead,
 put them in this folder and create a `manifest.json` that maps sound keys to
