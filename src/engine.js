@@ -121,6 +121,12 @@ class Sfx {
   }
   hit(power) { this.noise(0.09, clamp(power / 2600, 0.03, 0.3), 700 + power * 0.6); }
   bounce() { this.noise(0.05, 0.05, 500); }
+  shot() { this.tone(520, 0.08, 'square', 0.05); setTimeout(() => this.tone(760, 0.12, 'square', 0.05), 70); }
+  save() { this.tone(340, 0.16, 'sawtooth', 0.06, -120); this.noise(0.12, 0.1, 900); }
+  epic() {
+    [660, 880, 1100].forEach((f, i) => setTimeout(() => this.tone(f, 0.14, 'square', 0.06), i * 70));
+    this.noise(0.25, 0.12, 1200);
+  }
   pad(big) { this.tone(big ? 660 : 880, 0.09, 'sine', 0.05, big ? 220 : 120); }
   count() { this.tone(440, 0.11, 'square', 0.05); }
   go() { this.tone(880, 0.3, 'square', 0.06); }
@@ -132,6 +138,46 @@ class Sfx {
   demo() { this.noise(0.3, 0.22, 900); this.tone(120, 0.35, 'sawtooth', 0.09, -60); }
   whistle() { this.tone(2300, 0.5, 'sine', 0.06, 300); }
 }
+
+// ============================================================
+//  Voice — browser TTS announcer (no-op headless / unsupported)
+// ============================================================
+class Voice {
+  constructor() {
+    this.ok = typeof window !== 'undefined' && 'speechSynthesis' in window;
+    this.voice = null;
+  }
+  pickVoice() {
+    if (this.voice) return this.voice;
+    const vs = window.speechSynthesis.getVoices();
+    this.voice = vs.find((v) => v.lang.startsWith('en') && v.localService) ||
+                 vs.find((v) => v.lang.startsWith('en')) || null;
+    return this.voice;
+  }
+  say(text, rate = 1.12, pitch = 1.05) {
+    if (!this.ok) return;
+    try {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = this.pickVoice();
+      if (v) u.voice = v;
+      u.lang = 'en-US';
+      u.rate = rate;
+      u.pitch = pitch;
+      window.speechSynthesis.cancel();     // announcer never talks over himself
+      window.speechSynthesis.speak(u);
+    } catch { /* TTS unavailable */ }
+  }
+}
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+const CALLOUTS = {
+  shot: { text: 'SHOT ON GOAL!', lines: ['Shot on goal!', 'What a strike!'], sfx: 'shot' },
+  save: { text: 'SAVE!', lines: ['What a save!', 'Great save!'], sfx: 'save' },
+  epic: { text: 'EPIC SAVE!', lines: ['Epic save!', 'Incredible save!'], sfx: 'epic' },
+  ot:   { text: null, lines: ['Overtime! Next goal wins!'] },
+  t30:  { text: '30 SECONDS', lines: ['Thirty seconds remaining.'] },
+};
 
 // ============================================================
 //  Game
@@ -148,6 +194,13 @@ export class Game {
     this.onEnd = onEnd;
     this.diff = DIFFICULTY[opts.difficulty] || DIFFICULTY.pro;
     this.sfx = new Sfx();
+    this.voice = new Voice();
+    this.simT = 0;
+    this.lastTouch = null;        // { team, t } — last car that touched the ball
+    this.shotActive = null;       // { side, byAttacker, minT }
+    this.shotCd = 0;
+    this.prevSec = null;
+    this.callout = null;          // { text, t } — announcer text overlay
     this.keys = new Set();
     this.running = true;              // server never calls start(); keep timers alive
     this.paused = false;
@@ -237,6 +290,8 @@ export class Game {
     }
     for (const p of this.pads) p.t = 0;
     this.ballTrail.length = 0;
+    this.shotActive = null;
+    this.lastTouch = null;
     this.sfx.setBoost(false);
   }
 
@@ -574,6 +629,7 @@ export class Game {
       const power = rel * 1.15 + 55;
       b.vx += nx * power; b.vy += ny * power;
       car.vx -= nx * rel * 0.3; car.vy -= ny * rel * 0.3;
+      this.lastTouch = { team: car.team, t: this.simT };
       if (rel > 140) {
         this.sfx.hit(rel);
         this.emit('hit', { p: Math.round(rel), x: Math.round(b.x), y: Math.round(b.y) });
@@ -642,9 +698,95 @@ export class Game {
     this.flash = Math.min(0.5, this.flash + (big ? 0.42 : 0.3));
   }
 
+  // ---------------- announcer ----------------
+  playAnnounce(kind, n) {
+    if (kind === 'tick') {
+      this.sfx.count();
+      this.voice.say(String(n), 1.2);
+      return;
+    }
+    const c = CALLOUTS[kind];
+    if (!c) return;
+    if (c.sfx) this.sfx[c.sfx]();
+    this.voice.say(pick(c.lines));
+    if (c.text) this.callout = { text: c.text, t: 1.5 };
+  }
+
+  announce(kind, n) {
+    this.playAnnounce(kind, n);
+    this.emit('say', { k: kind, n });
+  }
+
+  // does the ball's current path cross a goal mouth soon?
+  ballThreat() {
+    const b = this.ball;
+    for (const side of [-1, 1]) {
+      if (side < 0 ? b.vx > -240 : b.vx < 240) continue;
+      const dist = side < 0 ? b.x : W - b.x;
+      const t = dist / Math.abs(b.vx);
+      if (t > 1.25) continue;
+      const yAt = b.y + b.vy * t;
+      if (yAt > GOAL_TOP - 14 && yAt < GOAL_BOT + 14) return { side, t };
+    }
+    return null;
+  }
+
+  // loose check: ball still traveling at the goal mouth, any speed
+  onTarget(side) {
+    const b = this.ball;
+    if (side < 0 ? b.vx > -100 : b.vx < 100) return false;
+    const dist = side < 0 ? b.x : W - b.x;
+    const t = dist / Math.abs(b.vx);
+    const yAt = b.y + b.vy * t;
+    return yAt > GOAL_TOP - 20 && yAt < GOAL_BOT + 20;
+  }
+
+  updateShotLogic() {
+    const sa = this.shotActive;
+    if (sa) {
+      if (this.onTarget(sa.side)) {
+        // still on target: remember the closest it got (in seconds to the line)
+        const dist = sa.side < 0 ? this.ball.x : W - this.ball.x;
+        sa.minT = Math.min(sa.minT, dist / Math.max(1, Math.abs(this.ball.vx)));
+        return;
+      }
+      // shot went off target — was it just deflected by the defending team?
+      this.shotActive = null;
+      const defTeam = sa.side === 1 ? 'orange' : 'blue';
+      const lt = this.lastTouch;
+      if (sa.byAttacker && lt && lt.team === defTeam && this.simT - lt.t < 0.4) {
+        this.announce(sa.minT < 0.45 ? 'epic' : 'save');
+      }
+      return;
+    }
+    // strict check to call a new shot: fast and arriving within ~1.25 s
+    const th = this.ballThreat();
+    if (th) {
+      const lt = this.lastTouch;
+      const byAttacker = !!lt &&
+        ((th.side === 1 && lt.team === 'blue') || (th.side === -1 && lt.team === 'orange'));
+      this.shotActive = { side: th.side, byAttacker, minT: th.t };
+      if (byAttacker && this.shotCd <= 0) {
+        this.shotCd = 3;
+        this.announce('shot');
+      }
+    }
+  }
+
+  updateClockVoice() {
+    if (this.overtime) return;
+    const s = Math.ceil(this.time);
+    if (s === this.prevSec) return;
+    this.prevSec = s;
+    if (s === 30) this.announce('t30');
+    else if (s <= 10 && s >= 1) this.announce('tick', s);
+  }
+
   // ---------------- main update (local + server) ----------------
   update(dt) {
     const ph = this.phase;
+    this.simT += dt;
+    this.shotCd = Math.max(0, this.shotCd - dt);
 
     if (ph === 'countdown') {
       this.phaseT -= dt;
@@ -673,6 +815,7 @@ export class Game {
             this.overtime = true;
             this.message = 'OVERTIME!';
             this.sfx.whistle(); this.emit('whistle', {});
+            this.announce('ot');
             this.phase = 'countdown'; this.phaseT = 3;
             this.resetKickoff();
             this.updateParticles(dt);
@@ -723,8 +866,10 @@ export class Game {
       }
     }
 
-    // goals (whole ball over the line)
+    // announcer + goals (whole ball over the line)
     if (ph === 'play') {
+      this.updateShotLogic();
+      this.updateClockVoice();
       if (b.x < -BALL_R) this.goalScored('orange');
       else if (b.x > W + BALL_R) this.goalScored('blue');
     }
@@ -753,7 +898,9 @@ export class Game {
     this.phaseT = 2.6;
     this.goalTeam = team;
     this.message = 'GOAL!';
+    this.shotActive = null;
     this.sfx.goal();
+    this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
     this.emit('goal', { team, x: Math.round(this.ball.x), y: Math.round(this.ball.y) });
     this.shake = 22;
     this.spawnExplosion(this.ball.x, this.ball.y, TEAM_COLORS[team].glow, true);
@@ -774,12 +921,19 @@ export class Game {
     for (const car of this.cars) car.boosting = false;
     const { blue, orange } = this.score;
     this.message = blue > orange ? 'BLUE WINS!' : 'ORANGE WINS!';
+    const winner = blue > orange ? 'Blue' : 'Orange';
+    this.voice.say(`${winner} team wins!`);
+    this.emit('win', { team: winner });
     this.endTimer = setTimeout(() => {
       if (this.running && this.onEnd) this.onEnd({ ...this.score, overtime: this.overtime });
     }, 1600);
   }
 
   updateParticles(dt) {
+    if (this.callout) {
+      this.callout.t -= dt;
+      if (this.callout.t <= 0) this.callout = null;
+    }
     const ps = this.particles;
     for (let i = ps.length - 1; i >= 0; i--) {
       const p = ps[i];
@@ -850,9 +1004,12 @@ export class Game {
     switch (ev.e) {
       case 'goal':
         this.sfx.goal();
+        this.voice.say(pick(['Goal!', 'What a goal!', 'Nice shot!']));
         this.shake = 22;
         this.spawnExplosion(ev.x, ev.y, TEAM_COLORS[ev.team].glow, true);
         break;
+      case 'say': this.playAnnounce(ev.k, ev.n); break;
+      case 'win': this.voice.say(`${ev.team} team wins!`); break;
       case 'hit':
         this.sfx.hit(ev.p);
         this.shake = Math.min(14, this.shake + ev.p / 120);
@@ -1169,10 +1326,23 @@ export class Game {
     ctx.fillStyle = '#ffb03a';
     ctx.fillText(String(this.score.orange), cx + 110, 45);
     ctx.font = '700 30px "Chakra Petch", sans-serif';
-    ctx.fillStyle = this.overtime ? '#ffd94a' : '#e8f4ff';
+    const lowTime = !this.overtime && this.time <= 10.5 && this.time > 0;
+    ctx.fillStyle = this.overtime ? '#ffd94a' : lowTime ? '#ff5f4e' : '#e8f4ff';
     const t = Math.max(0, this.time);
     const mm = Math.floor(t / 60), ss = Math.floor(t % 60);
     ctx.fillText(`${this.overtime ? '+' : ''}${mm}:${String(ss).padStart(2, '0')}`, cx, 45);
+
+    // announcer callout banner
+    if (this.callout && this.callout.t > 0) {
+      ctx.globalAlpha = Math.min(1, this.callout.t / 0.4);
+      ctx.font = 'italic 700 46px "Chakra Petch", sans-serif';
+      ctx.fillStyle = '#ffd94a';
+      ctx.shadowColor = '#ffd94a';
+      ctx.shadowBlur = 26;
+      ctx.fillText(this.callout.text, cx, 132);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    }
 
     // boost gauges
     if (this.isClient) {
