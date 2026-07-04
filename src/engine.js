@@ -717,7 +717,24 @@ export class Game {
 
     car.x += car.vx * dt;
     car.y += car.vy * dt;
-    this.collideArena(car, CAR_R, 0.3);
+    const preVx = car.vx, preVy = car.vy;
+    const bounced = this.collideArena(car, CAR_R, 0.62);   // cars rebound off walls
+    if (bounced) {
+      const impact = Math.hypot(preVx - car.vx, preVy - car.vy);
+      if (impact > 340) {
+        this.sfx.bounce();
+        this.emit('bounce', {});
+        this.shake = Math.min(9, this.shake + impact / 220);
+        for (let i = 0; i < Math.min(10, impact / 90); i++) {
+          this.particles.push({
+            x: car.x, y: car.y,
+            vx: car.vx * 0.4 + rand(-160, 160), vy: car.vy * 0.4 + rand(-160, 160),
+            life: rand(0.15, 0.35), max: 0.35, size: rand(2, 5),
+            color: Math.random() < 0.5 ? '#ffffff' : TEAM_COLORS[car.team].glow,
+          });
+        }
+      }
+    }
 
     if (car.boosting && this.phase !== 'countdown') this.spawnFlame(car, nfx, nfy);
   }
