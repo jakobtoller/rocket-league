@@ -10,14 +10,27 @@
   font-family: 'Chakra Petch', 'Avenir Next Condensed', sans-serif;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
 
 html, body, #root {
   height: 100%;
   background: var(--bg);
   color: var(--ink);
   overflow: hidden;
-  overscroll-behavior: none;   /* no pull-to-refresh on mobile */
+  overscroll-behavior: none;        /* no pull-to-refresh on mobile */
+  user-select: none;                /* no text selection / copy callout */
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;      /* no iOS long-press menu */
+}
+
+input, textarea {
+  user-select: text;                /* typing fields stay editable */
+  -webkit-user-select: text;
 }
 
 button {

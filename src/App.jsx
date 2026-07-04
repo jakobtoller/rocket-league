@@ -155,7 +155,7 @@ function LocalGame({ opts, onEnd, onQuit }) {
   }, []);
 
   return (
-    <div className="game-wrap">
+    <div className="game-wrap" onContextMenu={(e) => e.preventDefault()}>
       <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} className="game-canvas" />
       {isTouchDevice() && <TouchControls />}
       <div className="rotate-hint">🔄 Rotate your device for the full pitch</div>
@@ -464,7 +464,7 @@ function HostGame({ host, slots, onEnd, onQuit }) {
   }, []);
 
   return (
-    <div className="game-wrap">
+    <div className="game-wrap" onContextMenu={(e) => e.preventDefault()}>
       <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} className="game-canvas" />
       {isTouchDevice() && <TouchControls />}
       <div className="rotate-hint">🔄 Rotate your device for the full pitch</div>
@@ -495,7 +495,7 @@ function NetGame({ client, myId, slots, snapRef, onQuit }) {
   const spectating = !slots.some((s) => s.netId === myId);
 
   return (
-    <div className="game-wrap">
+    <div className="game-wrap" onContextMenu={(e) => e.preventDefault()}>
       <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} className="game-canvas" />
       {isTouchDevice() && !spectating && <TouchControls />}
       {spectating && <div className="spectate-tag">SPECTATING</div>}

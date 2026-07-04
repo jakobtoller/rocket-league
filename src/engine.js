@@ -23,21 +23,23 @@ export const CANVAS_H = H + MARGIN_Y * 2;
 const BALL_R = 30;
 const CAR_R = 31;
 
-// ---- Car handling ----
-const ACCEL = 980;
-const REV_ACCEL = 720;
+// ---- Car handling (tuned for control over chaos) ----
+const ACCEL = 830;
+const REV_ACCEL = 640;
 const BRAKE = 1500;
-const BOOST_ACCEL = 1150;
-const MAX_SPEED = 530;
-const MAX_BOOST_SPEED = 990;
-const SUPERSONIC = 820;
-const TURN_RATE = 3.5;
-const GRIP = 6.0;
-const DRAG = 0.85;
-const BOOST_BURN = 42;
-const BALL_DRAG = 0.42;
-const BALL_MAX = 1400;
+const BOOST_ACCEL = 880;
+const MAX_SPEED = 470;
+const MAX_BOOST_SPEED = 820;
+const SUPERSONIC = 690;
+const TURN_RATE = 2.7;
+const GRIP = 9.0;              // high lateral grip = predictable cornering
+const DRAG = 1.15;
+const BOOST_BURN = 38;
+const STEER_RESPONSE = 14;     // how fast steering input ramps (per second)
+const BALL_DRAG = 0.55;
+const BALL_MAX = 1150;
 const REST = 0.74;
+const INTERP_DELAY = 80;       // ms the net client renders in the past (jitter buffer)
 
 const DIFFICULTY = {
   rookie:  { speed: 0.78, boostUse: 0.35, err: 85, think: 0.34 },
@@ -168,8 +170,7 @@ export class Game {
     this.particles = [];
     this.rings = [];
     this.ballTrail = [];
-    this.snapPrev = null;
-    this.snapCur = null;
+    this.snapBuf = [];           // timestamped snapshots (net client jitter buffer)
 
     this.ball = { x: W / 2, y: H / 2, vx: 0, vy: 0 };
     this.pads = this.makePads();
@@ -186,7 +187,7 @@ export class Game {
     const car = {
       team: slot.team, idx, ctrl: slot.ctrl, netId: slot.netId ?? null,
       name: slot.name || '', x: 0, y: 0, angle: 0, vx: 0, vy: 0,
-      boost: 34, boosting: false, demoT: 0,
+      boost: 34, boosting: false, demoT: 0, steerS: 0,
       bot: slot.ctrl === 'bot'
         ? { target: { x: W / 2, y: H / 2 }, thinkT: rand(0, 0.15), wantBoost: false, role: 'attack' }
         : null,
@@ -304,7 +305,7 @@ export class Game {
         const dA = wrapAngle(desired - car.angle);
         return {
           throttle: touchState.mag > 0.2 ? 1 : 0,
-          steer: clamp(dA * 2.8, -1, 1),
+          steer: clamp(dA * 2.1, -1, 1),
           boost: touchState.boost,
         };
       }
@@ -451,13 +452,15 @@ export class Game {
     const fx = Math.cos(car.angle), fy = Math.sin(car.angle);
     const fwd = car.vx * fx + car.vy * fy;
 
+    // smooth the steering input so digital keys don't snap the wheel around
+    car.steerS += (c.steer - car.steerS) * Math.min(1, STEER_RESPONSE * dt);
     // low-speed steering floor: a car pinned against a wall (e.g. goal corner)
     // can still rotate itself free while holding throttle or reverse
     const steerRef = Math.abs(fwd) < 130 && c.throttle !== 0
       ? 130 * (c.throttle < 0 ? -1 : 1)
       : fwd;
     const steerScale = clamp(Math.abs(steerRef) / 210, 0, 1) * (steerRef < 0 ? -1 : 1);
-    car.angle = wrapAngle(car.angle + c.steer * TURN_RATE * steerScale * dt);
+    car.angle = wrapAngle(car.angle + car.steerS * TURN_RATE * steerScale * dt);
 
     let accel = 0;
     if (c.throttle > 0) accel = ACCEL;
@@ -568,7 +571,7 @@ export class Game {
     b.y = car.y + ny * min;
     const rel = (car.vx - b.vx) * nx + (car.vy - b.vy) * ny;
     if (rel > 0) {
-      const power = rel * 1.35 + 80;
+      const power = rel * 1.15 + 55;
       b.vx += nx * power; b.vy += ny * power;
       car.vx -= nx * rel * 0.3; car.vy -= ny * rel * 0.3;
       if (rel > 140) {
@@ -830,8 +833,8 @@ export class Game {
   }
 
   applySnap(s) {
-    this.snapPrev = this.snapCur;
-    this.snapCur = { rt: performance.now(), s };
+    this.snapBuf.push({ rt: performance.now(), s });
+    if (this.snapBuf.length > 30) this.snapBuf.shift();
     this.score.blue = s.score[0]; this.score.orange = s.score[1];
     this.time = s.time;
     this.overtime = !!s.ot;
@@ -868,33 +871,35 @@ export class Game {
   }
 
   clientTick(dt) {
-    const sc = this.snapCur, sp = this.snapPrev;
-    if (sc && sp) {
-      const span = Math.max(20, sc.rt - sp.rt);
-      const a = clamp((performance.now() - sc.rt) / span, 0, 1.25);
-      const bp = sp.s.ball, bc = sc.s.ball;
-      this.ball.x = bp[0] + (bc[0] - bp[0]) * a;
-      this.ball.y = bp[1] + (bc[1] - bp[1]) * a;
+    const buf = this.snapBuf;
+    if (buf.length) {
+      // render INTERP_DELAY ms in the past so network jitter is invisible:
+      // we always interpolate between two snapshots we already have
+      const rt = performance.now() - INTERP_DELAY;
+      while (buf.length > 2 && buf[1].rt <= rt) buf.shift();
+      const sa = buf[0], sb = buf.length > 1 ? buf[1] : null;
+      const a = sb && rt > sa.rt
+        ? clamp((rt - sa.rt) / Math.max(1, sb.rt - sa.rt), 0, 1)
+        : 0;
+      const newest = (sb || sa).s;
+
+      const bp = sa.s.ball, bc = newest.ball;
+      const ballJump = Math.hypot(bc[0] - bp[0], bc[1] - bp[1]) > 300; // kickoff teleport
+      this.ball.x = ballJump ? bc[0] : bp[0] + (bc[0] - bp[0]) * a;
+      this.ball.y = ballJump ? bc[1] : bp[1] + (bc[1] - bp[1]) * a;
       this.ball.vx = bc[2]; this.ball.vy = bc[3];
+
       this.cars.forEach((car, i) => {
-        const p = sp.s.cars[i], c = sc.s.cars[i];
+        const p = sa.s.cars[i], c = newest.cars[i];
         if (!p || !c) return;
-        car.x = p[0] + (c[0] - p[0]) * a;
-        car.y = p[1] + (c[1] - p[1]) * a;
-        car.angle = lerpAngle(p[2], c[2], a);
+        const jump = Math.hypot(c[0] - p[0], c[1] - p[1]) > 300;
+        car.x = jump ? c[0] : p[0] + (c[0] - p[0]) * a;
+        car.y = jump ? c[1] : p[1] + (c[1] - p[1]) * a;
+        car.angle = jump ? c[2] : lerpAngle(p[2], c[2], a);
         car.boost = c[3];
         car.boosting = !!(c[4] & 1);
         car.demoT = (c[4] & 2) ? 1 : 0;
       });
-    } else if (sc) {
-      this.cars.forEach((car, i) => {
-        const c = sc.s.cars[i];
-        if (!c) return;
-        [car.x, car.y, car.angle, car.boost] = c;
-        car.boosting = !!(c[4] & 1);
-        car.demoT = (c[4] & 2) ? 1 : 0;
-      });
-      [this.ball.x, this.ball.y, this.ball.vx, this.ball.vy] = sc.s.ball;
     }
     if (this.phase === 'play' || this.phase === 'goal') {
       for (const car of this.cars) {
